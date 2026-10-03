@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint + tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            services/pipeline/requirements.txt
+            services/api/requirements.txt
+            requirements-dev.txt
+      - name: Install
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Unit + API tests
+        run: python -m pytest -m "not integration" -q
+      - name: Integration test (Prefect + MLflow, quick config)
+        run: python -m pytest -m integration -q
+
+  docker:
+    name: Docker Compose end-to-end
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 30
+    env:
+      FLOW_CONFIG: configs/quick_flow_config.yaml
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the pipeline as the runner user (it writes into ./reports)
+        run: |
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+      - name: Build images
+        run: docker compose build
+      - name: Start infrastructure and API
+        run: docker compose up -d --wait postgres mlflow prefect api
+      - name: Train -> evaluate -> deploy (quick config)
+        run: docker compose run --rm pipeline
+      - name: Smoke test the deployed service
+        run: |
+          curl -fsS localhost:8000/health | tee health.json
+          python3 -c "import json; h=json.load(open('health.json')); assert h['status']=='ok', h"
+          curl -fsS -X POST localhost:8000/predict -H 'content-type: application/json' \
+            -d '{"pixels":[0,0,5,13,9,1,0,0,0,0,13,15,10,15,5,0,0,3,15,2,0,11,8,0,0,4,12,0,0,8,8,0,0,5,8,0,0,9,8,0,0,4,11,0,1,12,7,0,0,2,14,5,10,12,0,0,0,0,6,13,10,0,0,0],"source":"ci"}' \
+            | tee pred.json
+          python3 -c "import json; p=json.load(open('pred.json')); assert p['supervised']['digit']==0 and not p['anomaly']['is_anomaly'], p"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
