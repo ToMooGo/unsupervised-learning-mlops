@@ -1,0 +1,11 @@
+# Serving image (pinned; scikit-learn / skops must match the pipeline that trained the models)
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+numpy==2.5.3
+pandas==3.0.6
+scikit-learn==1.9.1
+skops==0.16.0
+mlflow-skinny==3.16.1
+sqlalchemy==2.1.1
+psycopg[binary]==3.3.6
+pyyaml==6.0.3

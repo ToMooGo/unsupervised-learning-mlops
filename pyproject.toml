@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unsupervised-mlops"
+version = "1.0.0"
+description = "Label-efficient learning with clustering, semi-supervised learning and anomaly detection, served end-to-end with Prefect, MLflow, FastAPI and PostgreSQL."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Xaysomvang (Tom) Thammavong" }]
+dependencies = [
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "scikit-learn>=1.6",
+    "matplotlib>=3.9",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+pipeline = ["mlflow>=3.0", "prefect>=3.0", "sqlalchemy>=2.0", "psycopg[binary]>=3.2", "httpx>=0.27"]
+dev = ["pytest>=8.0", "ruff>=0.6", "fastapi>=0.115", "httpx>=0.27", "sqlalchemy>=2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: end-to-end tests that run a Prefect flow with MLflow (slower)"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+    "ignore:Using `httpx` with `starlette.testclient`",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501", "B008"]

@@ -1,0 +1,274 @@
+"""Turn the results of a training run into figures, ``metrics.json`` and ``RESULTS.md``."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from . import plots
+from .data import CORRUPTION_DESCRIPTIONS, CORRUPTIONS, corrupt_digits
+
+
+def make_figures(a, b, c, split, fig_dir: str | Path) -> dict[str, Path]:
+    fig_dir = Path(fig_dir)
+    figs = {}
+    figs["a_k_selection"] = plots.plot_k_selection(
+        a.grid_scores,
+        a.diagnostics,
+        a.metrics["best_k"],
+        a.metrics.get("baseline_cv_accuracy"),
+        fig_dir / "a_k_selection.png",
+        tuned_baseline_cv=a.metrics.get("tuned_baseline_cv_accuracy"),
+    )
+    if a.robustness is not None:
+        figs["a_robustness"] = plots.plot_robustness_a(a.robustness, fig_dir / "a_robustness.png")
+    y_true_reps = split.y_train[np.array(b.representatives["train_index"])]
+    figs["b_representatives"] = plots.plot_representatives(
+        b.representatives, fig_dir / "b_representatives.png", y_true=y_true_reps
+    )
+    figs["b_label_efficiency"] = plots.plot_label_efficiency(
+        b.metrics,
+        b.random_curve,
+        b.active_learning,
+        len(split.X_train),
+        fig_dir / "b_label_efficiency.png",
+    )
+    figs["b_percentile_sweep"] = plots.plot_percentile_sweep(
+        b.percentile_sweep, b.params["percentile_closest"], fig_dir / "b_percentile_sweep.png"
+    )
+    if b.robustness is not None:
+        figs["b_robustness"] = plots.plot_robustness(
+            b.robustness,
+            fig_dir / "b_robustness.png",
+            left="random50_accuracy",
+            right="partial_propagation_accuracy",
+            left_label="50 random labels",
+            right_label="50 representatives + partial propagation",
+            title="Same 50-label budget, five random splits",
+        )
+    n_seeds = int(c.metrics.get("synthetic_n_seeds", 1))
+    figs["c_synthetic_detection"] = plots.plot_synthetic_detection(
+        c.artefacts, c.benchmark_summary, fig_dir / "c_synthetic_detection.png"
+    )
+    figs["c_benchmark_f1"] = plots.plot_benchmark_f1(
+        c.benchmark_summary, n_seeds, fig_dir / "c_benchmark_f1.png"
+    )
+    figs["c_information_criteria"] = plots.plot_information_criteria(
+        c.artefacts["blobs"]["ic_table"],
+        c.digits_ic_table,
+        {
+            "n_components": c.params["digits_n_components"],
+            "covariance_type": c.params["digits_covariance_type"],
+        },
+        fig_dir / "c_information_criteria.png",
+    )
+    figs["c_threshold_sweep"] = plots.plot_threshold_sweep(
+        c.sweeps["blobs"],
+        100 * c.params["contamination"],
+        "blobs",
+        fig_dir / "c_threshold_sweep.png",
+    )
+    figs["c_digit_anomalies"] = plots.plot_digit_anomalies(
+        c.digits_detector, split.X_train, fig_dir / "c_digit_anomalies.png"
+    )
+    examples = {"clean": split.X_test[0]}
+    examples.update(
+        {k: corrupt_digits(split.X_test[:1], k, i)[0] for i, k in enumerate(CORRUPTIONS)}
+    )
+    figs["c_corruptions"] = plots.plot_corruptions(
+        c.corruption_table,
+        examples,
+        100 * c.params["contamination"],
+        CORRUPTION_DESCRIPTIONS,
+        fig_dir / "c_corruptions.png",
+    )
+    return figs
+
+
+def _clean(obj):
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        return None if not np.isfinite(obj) else round(float(obj), 6)
+    return obj
+
+
+def write_metrics_json(path: str | Path, a, b, c, extra: dict, run_info: dict) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "run": run_info,
+        "part_a_clustering_features": {"params": a.params, "metrics": a.metrics},
+        "part_b_semi_supervised": {"params": b.params, "metrics": b.metrics},
+        "part_c_anomaly_detection": {"params": c.params, "metrics": {**c.metrics, **extra}},
+    }
+    path.write_text(json.dumps(_clean(payload), indent=2), encoding="utf-8")
+    return path
+
+
+def _pct(v, d=1):
+    return f"{100 * v:.{d}f}%"
+
+
+def _md_table(df: pd.DataFrame) -> str:
+    cols = list(df.columns)
+    lines = ["| " + " | ".join(cols) + " |", "|" + "|".join(["---"] * len(cols)) + "|"]
+    for _, r in df.iterrows():
+        lines.append("| " + " | ".join(str(r[c]) for c in cols) + " |")
+    return "\n".join(lines)
+
+
+def write_results_md(path: str | Path, a, b, c, extra: dict, run_info: dict) -> Path:
+    am, bm, cm = a.metrics, b.metrics, c.metrics
+    scaler = " -> StandardScaler" if a.params.get("scale_distances") else ""
+    lines = [
+        "# Results",
+        "",
+        f"_Auto-generated by `flows/train_flow.py` on {datetime.now(UTC):%Y-%m-%d %H:%M} UTC "
+        f"(MLflow run `{run_info.get('parent_run_id', 'n/a')}`, config `{run_info.get('config', 'n/a')}`)._",
+        "",
+        "Digits dataset: 1,797 images of 8x8 pixels, split 1,347 train / 450 test (`random_state=42`).",
+        "",
+        "## A. K-Means as a feature-engineering step",
+        "",
+        f"Test set: {am['n_test']} images (one image = {100 / am['n_test']:.2f} pp).",
+        "",
+        "| Model | Test accuracy | Errors |",
+        "|---|---|---|",
+        f"| Logistic Regression on raw pixels (book baseline) | {_pct(am['baseline_accuracy'])} | {am['baseline_errors']} |",
+        f"| StandardScaler -> Logistic Regression, C = {am['tuned_baseline_C']:g} tuned by CV (strong baseline) | "
+        f"{_pct(am['tuned_baseline_accuracy'])} | {am['tuned_baseline_errors']} |",
+        f"| K-Means (k={a.params['initial_k']}){scaler} -> Logistic Regression | "
+        f"{_pct(am['initial_k_accuracy'])} | {int(round((1 - am['initial_k_accuracy']) * am['n_test']))} |",
+        f"| K-Means (k={am['best_k']}, tuned by GridSearchCV){scaler} -> Logistic Regression | "
+        f"**{_pct(am['tuned_accuracy'])}** | **{am['tuned_errors']}** |",
+    ]
+    if "robustness_n_splits" in am:
+        n = am["robustness_n_splits"]
+        lines += [
+            "",
+            f"Over {n} other random splits (every hyperparameter re-tuned inside each split on its training "
+            f"set; k grid {a.params['robustness_k_grid']}):",
+            "",
+            "| Model | Mean ± std test accuracy |",
+            "|---|---|",
+            f"| Logistic Regression on raw pixels | {_pct(am['robustness_baseline_mean'])} ± {_pct(am['robustness_baseline_std'])} |",
+            f"| StandardScaler -> Logistic Regression (C tuned) | {_pct(am['robustness_tuned_baseline_mean'])} ± {_pct(am['robustness_tuned_baseline_std'])} |",
+            f"| K-Means{scaler} -> Logistic Regression (k tuned) | **{_pct(am['robustness_tuned_mean'])} ± {_pct(am['robustness_tuned_std'])}** |",
+            "",
+            f"Gain of the K-Means pipeline: {am['robustness_gain_pp_mean']:+.2f} pp over the book baseline "
+            f"(better on {am['robustness_splits_improved']}/{n} splits) and "
+            f"{am['robustness_gain_vs_tuned_pp_mean']:+.2f} pp over the strong baseline "
+            f"(better on {am['robustness_splits_improved_vs_tuned']}/{n} splits).",
+        ]
+    if a.ablation is not None:
+        ab = a.ablation.copy()
+        ab["cv_accuracy"] = ab.cv_accuracy.map(lambda v: f"{100 * v:.1f}%")
+        ab["test_accuracy"] = ab.test_accuracy.map(lambda v: f"{100 * v:.1f}%")
+        ab["fit_time_s"] = ab.fit_time_s.map(lambda v: f"{v:.0f} s")
+        lines += [
+            "",
+            "Ablation - same split, same k grid (10, 15, ..., 95), distance features scaled or not "
+            "(`fit_time_s` = total grid-search fit time):",
+            "",
+            _md_table(ab),
+        ]
+    lines += [
+        "",
+        "## B. Semi-supervised learning with 50 labels",
+        "",
+        "| Training labels | Test accuracy | Label accuracy |",
+        "|---|---|---|",
+        f"| 50 random images | {_pct(bm['random50_accuracy'])} | 100% |",
+        f"| 50 cluster representatives | {_pct(bm['representative50_accuracy'])} | {_pct(bm['representative_label_accuracy'])} |",
+        f"| + full label propagation (1,347 images) | {_pct(bm['full_propagation_accuracy'])} | {_pct(bm['full_propagation_label_accuracy'])} |",
+        f"| + partial propagation ({b.params['percentile_closest']:g}% closest, {bm['partial_propagation_n_train']} images) | "
+        f"**{_pct(bm['partial_propagation_accuracy'])}** | {_pct(bm['partial_propagation_label_accuracy'])} |",
+        f"| all 1,347 true labels (upper bound) | {_pct(bm['fully_supervised_accuracy'])} | 100% |",
+        "",
+        f"Human labelling effort: {bm['n_human_labels']} images = {bm['label_fraction_pct']:.1f}% of the training set "
+        f"(label source: `{b.params['label_source']}`).",
+    ]
+    if "robustness_n_splits" in bm:
+        lines += [
+            "",
+            f"Over {bm['robustness_n_splits']} random splits: 50 random labels "
+            f"{_pct(bm['robustness_random50_accuracy_mean'])} ± {_pct(bm['robustness_random50_accuracy_std'])} vs "
+            f"partial propagation {_pct(bm['robustness_partial_propagation_accuracy_mean'])} ± "
+            f"{_pct(bm['robustness_partial_propagation_accuracy_std'])} "
+            f"(propagated-label accuracy {_pct(bm['robustness_partial_propagation_label_accuracy_mean'])}).",
+        ]
+    if b.active_learning is not None:
+        al = b.active_learning
+        lines += [
+            "",
+            f"Active learning (uncertainty sampling, single run): {int(al.human_labels.iloc[0])} -> "
+            f"{int(al.human_labels.iloc[-1])} human labels lifts accuracy {_pct(al.test_accuracy.iloc[0])} -> "
+            f"{_pct(al.test_accuracy.iloc[-1])}.",
+        ]
+    summ = c.benchmark_summary.copy()
+    summ_fmt = pd.DataFrame(
+        {
+            "Dataset": summ.dataset,
+            "Detector": summ.detector,
+            "Precision": summ.precision.map(lambda v: f"{v:.3f}"),
+            "Recall": summ.recall.map(lambda v: f"{v:.3f}"),
+            "F1 (mean ± std)": [
+                f"{m:.3f} ± {s:.3f}"
+                for m, s in zip(summ.f1_mean, summ.f1_std.fillna(0), strict=True)
+            ],
+            "ROC-AUC": summ.roc_auc.map(lambda v: "n/a" if pd.isna(v) else f"{v:.3f}"),
+        }
+    )
+    ct = c.corruption_table.copy()
+    ct["what"] = ct.input.map(
+        lambda k: CORRUPTION_DESCRIPTIONS.get(k, "unmodified held-out digits")
+    )
+    ct = ct[["input", "what", "flagged_pct"]]
+    ct["flagged_pct"] = ct.flagged_pct.map(lambda v: f"{v:.1f}%")
+    lines += [
+        "",
+        "## C. Anomaly detection",
+        "",
+        f"### C1. Benchmark on data with known outliers ({int(cm['synthetic_n_seeds'])} random datasets each, "
+        f"{100 * c.params['contamination']:g}% contamination)",
+        "",
+        "Every detector receives the same prior knowledge: the expected contamination rate. "
+        "The GMM picks k and covariance type by BIC; DBSCAN's eps is calibrated label-free so that its noise fraction "
+        "matches the expected contamination.",
+        "",
+        _md_table(summ_fmt),
+        "",
+        f"### C2. Digit anomaly detector (shipped with the API): PCA({c.params['pca_variance']}) -> "
+        f"{cm['digits_pca_dims']} dims -> GMM (k={c.params['digits_n_components']}, {c.params['digits_covariance_type']}, BIC-selected)",
+        "",
+        _md_table(
+            ct.rename(columns={"input": "Input", "what": "Description", "flagged_pct": "Flagged"})
+        ),
+        "",
+        f"Threshold = {100 * c.params['contamination']:g}th percentile of held-out densities "
+        f"(calibration fraction {c.params['calibration_fraction']}). Setting it on the *training* densities instead "
+        f"(the book's approach) flags {cm['digits_train_threshold_clean_false_positive_pct']:.1f}% of clean test digits.",
+        f"All eight corruption types combined: {cm['digits_corrupted_detection_pct']:.1f}% flagged; "
+        f"ROC-AUC clean vs. all corruptions: {cm['digits_roc_auc_clean_vs_corrupted']:.3f}.",
+    ]
+    if extra:
+        lines += [
+            "",
+            f"On clean test digits, the classifier's error rate is {extra['classifier_error_pct_flagged']:.1f}% on images "
+            f"the detector flags vs {extra['classifier_error_pct_not_flagged']:.1f}% on the rest "
+            f"({extra['n_flagged_test']} flagged).",
+        ]
+    lines.append("")
+    path = Path(path)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path

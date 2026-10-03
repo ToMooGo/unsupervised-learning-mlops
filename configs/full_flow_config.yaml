@@ -1,0 +1,91 @@
+# ---------------------------------------------------------------------------
+#  One config, one command:  python run_flow.py --config configs/full_flow_config.yaml
+#  train  ->  evaluate (quality gates, champion vs challenger)  ->  deploy
+#  ${VAR:default} values are read from the environment (set in docker-compose.yml).
+# ---------------------------------------------------------------------------
+flow: full            # full | train | eval | deploy | monitor
+seed: 42              # train/test split and every model's random_state
+
+data:
+  test_size: 0.25     # 1,797 digits -> 1,347 train / 450 test (as in Geron, Ch. 9)
+
+mlflow:
+  tracking_uri: ${MLFLOW_TRACKING_URI:sqlite:///mlflow.db}
+  experiment: unsupervised-learning-mlops
+
+database:             # predictions + human labels written by the API
+  url: ${DATABASE_URL:sqlite:///app.db}
+
+reports:
+  dir: reports
+  figures_dir: reports/figures
+
+# --- Part A: K-Means as a feature-engineering step -------------------------
+part_a:
+  scale_distances: true                       # StandardScaler on the distances so LogReg converges
+  initial_k: 50                               # the book's first guess
+  k_grid: {start: 2, stop: 100, step: 1}      # GridSearchCV over k = 2..99
+  cv: 3
+  n_init: 10
+  diagnostics_k: {start: 2, stop: 31, step: 2}   # inertia / silhouette (for comparison)
+  robustness:                                 # repeat on other random splits, k re-tuned per split
+    enabled: true
+    seeds: [0, 1, 2, 3, 4]
+    k_grid: {start: 10, stop: 100, step: 10}
+  ablation:                                   # scaled vs raw distances, same procedure and grid
+    enabled: true
+    k_grid: {start: 10, stop: 100, step: 5}
+
+# --- Part B: semi-supervised learning ---------------------------------------
+part_b:
+  n_labeled: 50                 # human labelling budget = number of clusters
+  percentile_closest: 20        # partial propagation
+  percentile_sweep: [5, 10, 20, 30, 50, 75, 100]
+  n_init: 10
+  label_source: ${LABEL_SOURCE:oracle}   # oracle (ground truth simulates the labeller) | human (web UI)
+  allow_oracle_fallback: false
+  active_learning:
+    enabled: true
+    rounds: 5
+    queries_per_round: 10
+    random_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  robustness:
+    enabled: true
+    seeds: [0, 1, 2, 3, 4]
+
+# --- Part C: anomaly detection ------------------------------------------------
+part_c:
+  contamination: 0.04           # "the ratio of defective products is usually well-known"
+  threshold_sweep: [1, 2, 3, 4, 5, 6, 8, 10]
+  synthetic:
+    n_samples: 1000
+    seeds: [42, 0, 1, 2, 3]
+    n_init: 5
+    gmm_k: {start: 1, stop: 11}
+    dbscan_min_samples: 5
+    blobs_min_mahalanobis: 3.0  # injected outliers lie >= 3 sigma from every cluster
+    moons_min_distance: 0.15    # ... and >= 0.15 from every moon point
+  digits:
+    pca_variance: 0.95
+    gmm_k: {start: 1, stop: 16}
+    covariance_types: [full, tied, diag, spherical]
+    criterion: bic
+    selection_n_init: 3
+    n_init: 10
+    calibration_fraction: 0.25  # threshold set on held-out densities
+
+# --- Evaluation: a candidate is only deployed if it passes every gate ----------
+eval:
+  gates:
+    supervised_min_accuracy: 0.95
+    semi_supervised_min_accuracy: 0.85
+    anomaly_max_clean_false_positive_pct: 8.0
+    anomaly_min_detection_pct: {noise: 95, inverted: 95, shuffled: 95}
+  champion_tolerance_pp: 0.5    # challenger may not be > 0.5 pp worse than the current champion
+
+# --- Deployment -------------------------------------------------------------
+deploy:
+  alias: champion
+  api_url: ${API_URL:http://localhost:8000}
+  require_api: ${REQUIRE_API:false}   # fail the flow if the API cannot be reloaded
+  reload_retries: 10

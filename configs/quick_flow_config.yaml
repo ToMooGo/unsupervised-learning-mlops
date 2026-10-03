@@ -1,0 +1,17 @@
+# Fast variant (about 1 minute) for CI, demos and the integration test.
+extends: full_flow_config.yaml
+
+part_a:
+  k_grid: {start: 10, stop: 100, step: 20}
+  diagnostics_k: {start: 2, stop: 21, step: 6}
+  robustness: {enabled: false}
+  ablation: {enabled: false}
+
+part_b:
+  percentile_sweep: [10, 20, 50, 100]
+  active_learning: {enabled: true, rounds: 2, queries_per_round: 10, random_seeds: [0, 1, 2]}
+  robustness: {enabled: false}
+
+part_c:
+  synthetic: {seeds: [42], n_init: 2, gmm_k: {start: 1, stop: 7}}
+  digits: {gmm_k: {start: 2, stop: 9, step: 2}, covariance_types: [full, diag], selection_n_init: 1, n_init: 3}

@@ -1,0 +1,12 @@
+# Training / orchestration image (pinned; must match services/api for model compatibility)
+numpy==2.5.3
+pandas==3.0.6
+scikit-learn==1.9.1
+skops==0.16.0
+matplotlib==3.11.2
+pyyaml==6.0.3
+mlflow==3.16.1
+prefect==3.8.7
+sqlalchemy==2.1.1
+psycopg[binary]==3.3.6
+httpx==0.28.1

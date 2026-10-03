@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Digit Lab - Unsupervised Learning MLOps</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="7" cy="8" r="3"/><circle cx="17" cy="7" r="2.4"/><circle cx="12" cy="17" r="3.4"/><circle cx="20" cy="18" r="1.3" class="outlier"/></svg>
+      </span>
+      <div>
+        <h1>Digit Lab</h1>
+        <p class="sub">Clustering, semi-supervised learning and anomaly detection, served end-to-end</p>
+      </div>
+    </div>
+    <div class="status" id="status" title="Model service status">
+      <span class="dot"></span><span id="status-text">connecting...</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" class="tab active" data-tab="predict" aria-selected="true">Predict</button>
+    <button role="tab" class="tab" data-tab="label" aria-selected="false">Label</button>
+    <button role="tab" class="tab" data-tab="monitor" aria-selected="false">Monitor</button>
+    <a class="tab link" href="/docs" target="_blank" rel="noopener">API docs &#8599;</a>
+  </nav>
+
+  <main>
+    <!-- ======================= PREDICT ======================= -->
+    <section id="tab-predict" class="panel active" role="tabpanel">
+      <div class="grid two">
+        <div class="card">
+          <h2>1 &middot; Draw a digit, or pick a sample</h2>
+          <p class="hint">Your drawing is cropped, scaled and pooled into the dataset's 8&times;8 format (0-16 per pixel), exactly like the UCI digits.</p>
+          <div class="draw-row">
+            <canvas id="pad" width="280" height="280" aria-label="Drawing pad"></canvas>
+            <div class="preview-col">
+              <span class="mini-label">model input (8&times;8)</span>
+              <canvas id="preview" width="8" height="8" class="pixelated big"></canvas>
+              <button id="clear" class="btn ghost">Clear</button>
+              <button id="predict-draw" class="btn primary">Predict drawing</button>
+            </div>
+          </div>
+          <div class="samples">
+            <span class="mini-label">or send a held-out test digit:</span>
+            <div class="chips">
+              <button class="chip" data-kind="clean">Clean digit</button>
+              <button class="chip warn" data-kind="noise">Random noise</button>
+              <button class="chip warn" data-kind="inverted">Inverted</button>
+              <button class="chip warn" data-kind="mirrored">Mirrored</button>
+              <button class="chip warn" data-kind="shifted">Shifted 1px</button>
+              <button class="chip warn" data-kind="gaussian">Gaussian noise</button>
+              <button class="chip warn" data-kind="dimmed">Dimmed</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="result-card">
+          <h2>2 &middot; What the models say</h2>
+          <div id="result-empty" class="empty">Draw a digit or pick a sample to see both classifiers and the anomaly detector respond.</div>
+          <div id="result" hidden>
+            <div id="verdict" class="verdict"></div>
+            <div class="models">
+              <div class="model">
+                <div class="model-head">
+                  <span class="tag">supervised</span>
+                  <span class="model-name">K-Means features &rarr; Logistic Regression</span>
+                  <span class="model-sub">trained on all 1,347 labels</span>
+                </div>
+                <div class="pred"><span class="digit" id="sup-digit">-</span><span class="conf" id="sup-conf"></span></div>
+                <div class="bars" id="sup-bars"></div>
+              </div>
+              <div class="model">
+                <div class="model-head">
+                  <span class="tag alt">semi-supervised</span>
+                  <span class="model-name">Representatives + label propagation</span>
+                  <span class="model-sub">trained from only 50 human labels</span>
+                </div>
+                <div class="pred"><span class="digit" id="semi-digit">-</span><span class="conf" id="semi-conf"></span></div>
+                <div class="bars" id="semi-bars"></div>
+              </div>
+            </div>
+            <p class="meta" id="meta"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= LABEL ======================= -->
+    <section id="tab-label" class="panel" role="tabpanel" hidden>
+      <div class="card">
+        <div class="row-between">
+          <div>
+            <h2>Label the 50 cluster-representative images</h2>
+            <p class="hint">K-Means grouped the 1,347 training images into 50 clusters; these are the images closest to each centroid. Labelling just these (3.7% of the data) is enough to train the semi-supervised model. Labels are stored in PostgreSQL; retrain with <code>LABEL_SOURCE=human</code> to use them.</p>
+          </div>
+          <div class="progress-box">
+            <div class="progress"><div id="label-progress" style="width:0%"></div></div>
+            <span id="label-count">0 / 50 labelled</span>
+          </div>
+        </div>
+        <div id="label-grid" class="label-grid"></div>
+        <div class="row-between">
+          <label class="labeler">Your name <input id="labeler" maxlength="64" placeholder="anonymous"></label>
+          <div><span id="label-msg" class="msg"></span> <button id="save-labels" class="btn primary">Save labels</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= MONITOR ======================= -->
+    <section id="tab-monitor" class="panel" role="tabpanel" hidden>
+      <div class="row-between">
+        <h2 class="section-title">Live monitoring <span class="muted" id="mon-window"></span></h2>
+        <button id="refresh-mon" class="btn ghost">Refresh</button>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><span class="kpi-label">Predictions</span><span class="kpi-value" id="k-n">-</span></div>
+        <div class="kpi"><span class="kpi-label">Anomaly rate</span><span class="kpi-value" id="k-anom">-</span><span class="kpi-sub" id="k-anom-sub"></span></div>
+        <div class="kpi"><span class="kpi-label">Models agree</span><span class="kpi-value" id="k-agree">-</span><span class="kpi-sub">supervised vs semi-supervised</span></div>
+        <div class="kpi"><span class="kpi-label">Mean latency</span><span class="kpi-value" id="k-lat">-</span><span class="kpi-sub">model inference only</span></div>
+      </div>
+      <div class="grid two">
+        <div class="card">
+          <h3>Predicted digits (supervised model)</h3>
+          <div id="class-chart" class="colchart" role="img" aria-label="Predicted digit counts"></div>
+        </div>
+        <div class="card">
+          <h3>Requests by input source</h3>
+          <table class="table" id="source-table"><thead><tr><th>source</th><th class="num">requests</th><th class="num">flagged</th><th class="num">rate</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Most recent predictions</h3>
+        <div id="recent" class="recent"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    Built by Xaysomvang (Tom) Thammavong &middot; methods from G&eacute;ron, <em>Hands-On Machine Learning</em>, Ch. 9 &middot;
+    <a href="https://github.com/ToMooGo/unsupervised-learning-mlops" target="_blank" rel="noopener">source on GitHub</a> &middot;
+    <a href="https://www.linkedin.com/in/xaysomvang-thammavong-63189a1b9/" target="_blank" rel="noopener">LinkedIn</a>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>
